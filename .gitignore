@@ -29,9 +29,6 @@ backend/.ipynb_checkpoints/
 # Local runtime outputs
 backend/outputs/
 
-# Generated weights and exported models
-backend/assets/weight/**
-!backend/assets/weight/.gitkeep
 
 # Generated image datasets and intermediate artifacts
 backend/images/**

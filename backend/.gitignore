@@ -29,9 +29,6 @@ dist/
 # Local runtime outputs
 outputs/
 
-# Generated weights and exported models
-assets/weight/**
-!assets/weight/.gitkeep
 
 # Generated image datasets and intermediate artifacts
 images/agumentation_images/
