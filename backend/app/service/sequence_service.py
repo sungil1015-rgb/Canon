@@ -21,6 +21,7 @@ from app.core.config import SETTINGS
 from app.core.paths import ASSET_WEIGHTS_DIR, SAMPLE_VIDEO_DIR, SEQUENCE_VIDEO_RUNS_DIR, yolo_weight_file
 from app.models.target_model import DEFAULT_THRESHOLD, BinaryPrediction, get_target_sequence_settings, get_target_threshold
 from app.models.warping import YoloScreenWarper
+from app.service.sequence_db import DEFAULT_DB_PATH, upsert_sequence_run
 from app.service.target_service import TargetModelHandle, TargetService
 from app.service.video_service import ensure_dir, open_video_capture, resolve_videos
 
@@ -32,6 +33,7 @@ class SequenceRunConfig:
 	target_root: Path = ASSET_WEIGHTS_DIR
 	yolo_weights: Path = yolo_weight_file()
 	output_root: Path = SEQUENCE_VIDEO_RUNS_DIR
+	db_path: Path = DEFAULT_DB_PATH
 	device: str = SETTINGS.sequence.device
 	threshold: float | None = None
 	conf: float = 0.25
@@ -527,12 +529,23 @@ class SequenceService:
 			),
 			encoding="utf-8",
 		)
+		db_run_id = upsert_sequence_run(
+			{
+				"run_timestamp": run_ts,
+				"run_root": str(run_root),
+				"summary": summary_row,
+				"videos": video_results,
+			},
+			db_path=self.config.db_path,
+		)
 		return {
 			"run_timestamp": run_ts,
 			"run_root": str(run_root),
 			"summary": summary_row,
 			"videos": video_results,
 			"json_path": str(json_path),
+			"db_path": str(self.config.db_path),
+			"db_run_id": db_run_id,
 		}
 
 

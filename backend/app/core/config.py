@@ -14,6 +14,8 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 WEIGHTS_DIR = PROJECT_ROOT / "weights"
 ASSETS_DIR = PROJECT_ROOT / "assets"
 ASSET_WEIGHTS_DIR = ASSETS_DIR / "weight"
+DATA_DIR = PROJECT_ROOT / "data"
+DB_DIR = DATA_DIR / "db"
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 TESTS_DIR = PROJECT_ROOT / "tests"
 
@@ -33,9 +35,9 @@ WARPING_TEST_RUNS_DIR = OUTPUTS_DIR / "warping_test_runs"
 TEMPLATE_MATCHER_RUNS_DIR = OUTPUTS_DIR / "template_matcher_v1"
 
 DEFAULT_TARGET_MODEL_ROOT = ASSET_WEIGHTS_DIR
-DEFAULT_YOLO_WEIGHTS = ASSET_WEIGHTS_DIR / "yolo" / "yolo11n.pt"
+DEFAULT_YOLO_WEIGHTS = ASSET_WEIGHTS_DIR / "yolo" / "best.pt"
 DEFAULT_ASSET_TARGET_MODEL_ROOT = ASSET_WEIGHTS_DIR
-DEFAULT_ASSET_YOLO_WEIGHTS = ASSET_WEIGHTS_DIR / "yolo" / "yolo11n.pt"
+DEFAULT_ASSET_YOLO_WEIGHTS = ASSET_WEIGHTS_DIR / "yolo" / "best.pt"
 
 
 def project_path(*parts: str | Path) -> Path:
@@ -100,6 +102,8 @@ class AppSettings:
 	weights_dir: Path = WEIGHTS_DIR
 	assets_dir: Path = ASSETS_DIR
 	asset_weights_dir: Path = ASSET_WEIGHTS_DIR
+	data_dir: Path = DATA_DIR
+	db_dir: Path = DB_DIR
 	configs_dir: Path = CONFIGS_DIR
 	tests_dir: Path = TESTS_DIR
 

@@ -15,6 +15,8 @@ OUTPUTS_DIR = SETTINGS.outputs_dir
 WEIGHTS_DIR = SETTINGS.weights_dir
 ASSETS_DIR = SETTINGS.assets_dir
 ASSET_WEIGHTS_DIR = SETTINGS.asset_weights_dir
+DATA_DIR = SETTINGS.data_dir
+DB_DIR = SETTINGS.db_dir
 
 TARGET_IMAGE_DIR = SETTINGS.target_image_dir
 TARGET_IMAGES_DIR = SETTINGS.target_images_dir
@@ -52,7 +54,7 @@ def asset_openvino_model_file(target_name: str) -> Path:
 	return asset_openvino_dir(target_name) / "model.xml"
 
 
-def yolo_weight_file(filename: str = "yolo11n.pt") -> Path:
+def yolo_weight_file(filename: str = "best.pt") -> Path:
 	"""Return a YOLO weight file stored under assets/weight/yolo."""
 	return ASSET_WEIGHTS_DIR / "yolo" / filename
 
@@ -69,6 +71,8 @@ def ensure_project_dirs() -> None:
 		OUTPUTS_DIR,
 		ASSETS_DIR,
 		ASSET_WEIGHTS_DIR,
+		DATA_DIR,
+		DB_DIR,
 		TARGET_IMAGE_DIR,
 		TARGET_IMAGES_DIR,
 		CNN_TRAIN_DIR,
@@ -95,6 +99,8 @@ __all__ = [
 	"WEIGHTS_DIR",
 	"ASSETS_DIR",
 	"ASSET_WEIGHTS_DIR",
+	"DATA_DIR",
+	"DB_DIR",
 	"TARGET_IMAGE_DIR",
 	"TARGET_IMAGES_DIR",
 	"CNN_TRAIN_DIR",
