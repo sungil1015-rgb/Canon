@@ -514,20 +514,28 @@ function TestModeModal() {
     setLoading(true);
     const currentOffset = isNew ? 0 : offset;
     try {
-      const resp = await fetch(`${import.meta.env.VITE_API_URL}/api/inspection-logs?offset=${currentOffset}&limit=${LIMIT}`);
-      const data = await resp.json();
-      
-      if (Array.isArray(data)) {
-        if (isNew) {
-          setDbLogs(data);
-          setOffset(data.length);
-        } else {
-          setDbLogs([...dbLogs, ...data]);
-          setOffset(p => p + data.length);
-        }
-        if (data.length < LIMIT) setHasMore(false);
-        else setHasMore(true);
+      // inspection_log + sequence_runs 동시 조회
+      const [inspResp, seqResp] = await Promise.all([
+        fetch(`${import.meta.env.VITE_API_URL}/api/inspection-logs?offset=${currentOffset}&limit=${LIMIT}`),
+        fetch(`${import.meta.env.VITE_API_URL}/api/sequence-runs?offset=${currentOffset}&limit=${LIMIT}`),
+      ]);
+      const inspData = await inspResp.json();
+      const seqData  = await seqResp.json().catch(() => []);
+
+      const merged = [
+        ...(Array.isArray(inspData) ? inspData : []),
+        ...(Array.isArray(seqData)  ? seqData  : []),
+      ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      if (isNew) {
+        setDbLogs(merged);
+        setOffset(merged.length);
+      } else {
+        setDbLogs([...dbLogs, ...merged]);
+        setOffset(p => p + merged.length);
       }
+      if (inspData.length < LIMIT && seqData.length < LIMIT) setHasMore(false);
+      else setHasMore(true);
     } catch (err) {
       console.error("Failed to fetch logs:", err);
     } finally {
@@ -657,13 +665,29 @@ function TestModeModal() {
               </tr>
             </thead>
             <tbody className="text-sm font-mono text-zinc-400 divide-y divide-zinc-800/50">
-              {dbLogs.map((log) => (
-                <tr key={log.id} className="hover:bg-white/5 transition-colors group">
+              {dbLogs.map((log) => {
+                const isSeqRun = log.source_type === 'sequence_run';
+                return (
+                <tr key={log.id} className={`hover:bg-white/5 transition-colors group ${isSeqRun ? 'border-l-2 border-l-blue-500/40' : ''}`}>
                   <td className="p-5 pl-6 text-zinc-600 font-bold group-hover:text-zinc-400 transition-colors">#{log.id}</td>
                   <td className="p-5 whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</td>
-                  <td className="p-5 text-blue-400/80 font-black uppercase text-[10px]">{log.source_type}</td>
+                  <td className="p-5 font-black uppercase text-[10px]">
+                    <span className={isSeqRun ? 'text-blue-400' : 'text-blue-400/80'}>
+                      {log.source_type}
+                    </span>
+                    {isSeqRun && (
+                      <span className="ml-1.5 px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/30 text-blue-400 text-[9px] rounded-sm">
+                        T{log.target_idx}/4
+                      </span>
+                    )}
+                  </td>
                   <td className="p-5">
-                    <span className={`px-3 py-1.5 rounded-sm text-[11px] font-black tracking-tighter ${log.confirmed_state === 'ERROR_SEQUENCE' ? 'bg-red-500/10 text-red-500 border border-red-500/30' : 'bg-green-500/10 text-green-500 border border-green-500/30'}`}>
+                    <span className={`px-3 py-1.5 rounded-sm text-[11px] font-black tracking-tighter ${
+                      log.confirmed_state?.startsWith('Complete') ? 'bg-green-500/10 text-green-500 border border-green-500/30'
+                      : log.confirmed_state?.startsWith('Partial') ? 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/30'
+                      : log.confirmed_state === 'ERROR_SEQUENCE' ? 'bg-red-500/10 text-red-500 border border-red-500/30'
+                      : 'bg-green-500/10 text-green-500 border border-green-500/30'
+                    }`}>
                       {log.confirmed_state}
                     </span>
                   </td>
@@ -677,16 +701,23 @@ function TestModeModal() {
                   </td>
                   <td className="p-5 text-[10px] text-zinc-500 truncate max-w-[300px] hover:text-[#38bdf8] cursor-help transition-colors">{log.file_path}</td>
                   <td className="p-5 pr-6 text-center">
-                    <button 
-                      onClick={() => handleReinspect(log.id)}
-                      disabled={loading}
-                      className="px-5 py-3 font-normal bg-zinc-800 hover:bg-[#E50012] text-white text-[11px] font-black tracking-widest transition-all shadow-md active:scale-90 border border-zinc-700"
-                    >
-                      {t.reinspect}
-                    </button>
+                    {isSeqRun ? (
+                      <span className="px-5 py-3 text-zinc-700 text-[11px] font-black tracking-widest border border-zinc-800 cursor-not-allowed">
+                        SEQ RUN
+                      </span>
+                    ) : (
+                      <button 
+                        onClick={() => handleReinspect(log.id)}
+                        disabled={loading}
+                        className="px-5 py-3 font-normal bg-zinc-800 hover:bg-[#E50012] text-white text-[11px] font-black tracking-widest transition-all shadow-md active:scale-90 border border-zinc-700"
+                      >
+                        {t.reinspect}
+                      </button>
+                    )}
                   </td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
           {dbLogs.length === 0 && !loading && (
@@ -698,7 +729,7 @@ function TestModeModal() {
         </div>
 
         <div className="p-3 bg-[#27272a] border-t border-[#3f3f46] flex justify-between items-center">
-          <span className="text-[10px] font-mono text-zinc-500 tracking-widest">CONNECTED TO DB: factory_test.db</span>
+          <span className="text-[10px] font-mono text-zinc-500 tracking-widest">CONNECTED TO DB: factory_test.db + sequence_runs.sqlite3</span>
           <button
             onClick={() => setTestModeOpen(false)}
             className="px-8 py-2 bg-[#f59e0b] hover:bg-[#ffb020] text-black font-black text-sm transition-all"
@@ -1195,13 +1226,6 @@ export default function App() {
           </div>
           <button onClick={() => setSettingsOpen(true)} className="p-2 bg-[#18181b] hover:bg-[#3f3f46] border border-[#3f3f46] hover:border-zinc-400 text-zinc-300 hover:text-white transition-colors">
             <Settings size={18} />
-          </button>
-          <button 
-            onClick={() => setSourceMode(true)} 
-            className="p-2 bg-[#18181b] hover:bg-[#3f3f46] border border-[#3f3f46] hover:border-zinc-400 text-zinc-300 hover:text-white transition-colors flex items-center gap-2 group"
-          >
-            <Video size={18} className="group-hover:text-[#E50012]" />
-            <span className="text-[10px] font-black hidden lg:block">LOCAL SOURCE</span>
           </button>
         </div>
       </header>

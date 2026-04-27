@@ -5,12 +5,17 @@ description = "Computer vision backend for screen detection, warping, and target
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.4.4",
-    "opencv-python>=4.13.0.92",
+    "opencv-python>=4.8.0",
     "pillow>=12.2.0",
     "torch>=2.11.0",
     "torchvision>=0.26.0",
     "ultralytics>=8.4.40",
     "openvino>=2026.1.0",
+    "fastapi[standard]>=0.115.0",
+    "websockets>=13.1",
+    "python-multipart>=0.0.12",
+    "sqlalchemy>=2.0.35",
+    "pydantic>=2.9.2",
 ]
 
 [dependency-groups]
