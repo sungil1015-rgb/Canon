@@ -267,45 +267,57 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                 })
 
             elif ext in _IMAGE_EXTS:
-                # ── 이미지 처리 ────────────────────────────────────────────
+                # ── 이미지 처리 (이미지당 1행 저장) ──────────────────────────
                 try:
                     per_target = await loop.run_in_executor(
                         None, _inspect_single_image, save_path
                     )
 
-                    if not per_target:
-                        # 이미지 읽기 실패 등 — 최소 1건 기록
-                        per_target = [{
-                            "target_name": "unknown", "target_idx": 0,
-                            "label": "no_result", "score": 0.0,
-                            "confirmed_state": "NoResult", "anomaly_flag": True,
-                        }]
+                    # "yes" 레이블 중 가장 높은 score를 가진 target 선택
+                    matched = [t for t in per_target if t.get("label") == "yes"]
+                    if matched:
+                        best = max(matched, key=lambda t: t.get("score", 0.0))
+                        confirmed_state = best["target_name"]   # ex) "target_1"
+                        predicted_label = best["target_name"]
+                        confidence = float(best["score"])
+                        anomaly_flag = False
+                        target_idx = best["target_idx"]
+                        extra = {
+                            "matched_target": best["target_name"],
+                            "all_targets": [{"name": t["target_name"], "label": t["label"], "score": t["score"]} for t in per_target],
+                        }
+                    else:
+                        # 매칭 없음
+                        confirmed_state = "No"
+                        predicted_label = "no_match"
+                        confidence = 0.0
+                        anomaly_flag = True
+                        target_idx = 0
+                        extra = {
+                            "all_targets": [{"name": t["target_name"], "label": t["label"], "score": t["score"]} for t in per_target] if per_target else [],
+                        }
 
-                    for item in per_target:
-                        log_id = insert_log(
-                            source_type="image_upload",
-                            confirmed_state=item["confirmed_state"],
-                            predicted_label=item["label"],
-                            confidence=item["score"],
-                            anomaly_flag=item["anomaly_flag"],
-                            file_path=file_label,
-                            target_idx=item["target_idx"],
-                            extra={"target_name": item["target_name"]},
-                        )
-                        results.append({
-                            "id": log_id,
-                            "file": file_label,
-                            "source_type": "image_upload",
-                            "target_name": item["target_name"],
-                            "target_idx": item["target_idx"],
-                            "predicted_label": item["label"],
-                            "confidence": item["score"],
-                            "confirmed_state": item["confirmed_state"],
-                            "anomaly_flag": item["anomaly_flag"],
-                        })
+                    log_id = insert_log(
+                        source_type="image_upload",
+                        confirmed_state=confirmed_state,
+                        predicted_label=predicted_label,
+                        confidence=confidence,
+                        anomaly_flag=anomaly_flag,
+                        file_path=file_label,
+                        target_idx=target_idx,
+                        extra=extra,
+                    )
+                    results.append({
+                        "id": log_id,
+                        "file": file_label,
+                        "source_type": "image_upload",
+                        "predicted_label": predicted_label,
+                        "confidence": confidence,
+                        "confirmed_state": confirmed_state,
+                        "anomaly_flag": anomaly_flag,
+                    })
 
                 except Exception as e:
-                    # 예외 발생 시에도 DB에 기록
                     log_id = insert_log(
                         source_type="image_upload",
                         confirmed_state="Error",
@@ -324,6 +336,8 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                         "confirmed_state": "Error",
                         "anomaly_flag": True,
                     })
+
+
 
             else:
                 results.append({
