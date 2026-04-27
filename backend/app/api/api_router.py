@@ -14,6 +14,7 @@ inspect-image 처리 흐름:
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -48,111 +49,106 @@ class OverrideRequest(BaseModel):
     display: dict[str, Any] | None = None
 
 
-# ── 내부: 이미지 단일 추론 ────────────────────────────────────────────────────
+# -- 내부: 이미지 단일 추론 ------------------------------------------------
+_logger = logging.getLogger(__name__)
+
+
 def _inspect_single_image(image_path: Path) -> list[dict[str, Any]]:
-    """YOLO detection → warping → target 1~4 분류. 결과 리스트를 반환합니다."""
-    import cv2
-    from app.core.paths import yolo_weight_file
-    from app.models.warping import YoloScreenWarper
-    from app.service.target_service import TargetService
-
-    frame_bgr = cv2.imread(str(image_path))
-    if frame_bgr is None:
-        return []
-
+    """YOLO detection -> warping -> target 1~4 분류. 결과 리스트를 반환합니다."""
     results: list[dict[str, Any]] = []
-
     try:
+        import cv2
+        from app.core.paths import yolo_weight_file
+
+        frame_bgr = cv2.imread(str(image_path))
+        if frame_bgr is None:
+            _logger.warning("이미지 읽기 실패: %s", image_path)
+            return results
+
         yolo_path = yolo_weight_file()
-        if not yolo_path.exists():
-            # YOLO 가중치 없으면 raw 분류만
-            raise FileNotFoundError("no yolo weights")
-
-        warper = YoloScreenWarper(
-            weights=yolo_path,
-            device="cpu",
-            conf=0.25,
-            imgsz=640,
-            padding_ratio=0.02,
-            output_size=640,
-            classes=[0],
-        )
-        detections = warper.detect(frame_bgr)
-
-        if not detections:
-            return [{
-                "target_name": "unknown",
-                "target_idx": 0,
-                "label": "no_detection",
-                "score": 0.0,
-                "confirmed_state": "NoDetection",
-                "anomaly_flag": True,
-            }]
-
-        best = max(detections, key=lambda d: d["confidence"])
-        warped = warper.warp_detection(frame_bgr, best, index=0)
-        warped_bgr = warped.warped_bgr
-
-        svc = TargetService()
-        for idx, target_name in enumerate(DEFAULT_TARGET_ORDER, start=1):
+        if yolo_path.exists():
             try:
-                pred = svc.predict_bgr(target_name, warped_bgr)
+                from app.models.warping import YoloScreenWarper
+                from app.service.target_service import TargetService
+
+                warper = YoloScreenWarper(
+                    weights=yolo_path, device="cpu", conf=0.25,
+                    imgsz=640, padding_ratio=0.02, output_size=640, classes=[0],
+                )
+                detections = warper.detect(frame_bgr)
+
+                if not detections:
+                    return [{"target_name": "unknown", "target_idx": 0,
+                             "label": "no_detection", "score": 0.0,
+                             "confirmed_state": "NoDetection", "anomaly_flag": True}]
+
+                best = max(detections, key=lambda d: d["confidence"])
+                warped_bgr = warper.warp_detection(frame_bgr, best, index=0).warped_bgr
+
+                svc = TargetService()
+                for idx, target_name in enumerate(DEFAULT_TARGET_ORDER, start=1):
+                    try:
+                        pred = svc.predict_bgr(target_name, warped_bgr)
+                        results.append({
+                            "target_name": target_name, "target_idx": idx,
+                            "label": pred.label, "score": float(pred.score),
+                            "confirmed_state": "Yes" if pred.label == "yes" else "No",
+                            "anomaly_flag": pred.label != "yes",
+                        })
+                    except Exception as inner_e:
+                        _logger.warning("%s 추론 실패: %s", target_name, inner_e)
+                        results.append({
+                            "target_name": target_name, "target_idx": idx,
+                            "label": "model_error", "score": 0.0,
+                            "confirmed_state": "ModelError", "anomaly_flag": True,
+                        })
+            except Exception as e:
+                _logger.error("YOLO 추론 실패: %s", e, exc_info=True)
+        else:
+            # YOLO 가중치 없을 때 target_1 raw 분류 시도
+            _logger.info("YOLO 가중치 없음 (%s), raw 분류 시도", yolo_path)
+            try:
+                from app.service.target_service import TargetService
+                svc = TargetService()
+                pred = svc.predict_bgr("target_1", frame_bgr)
                 results.append({
-                    "target_name": target_name,
-                    "target_idx": idx,
-                    "label": pred.label,
-                    "score": float(pred.score),
+                    "target_name": "target_1", "target_idx": 1,
+                    "label": pred.label, "score": float(pred.score),
                     "confirmed_state": "Yes" if pred.label == "yes" else "No",
                     "anomaly_flag": pred.label != "yes",
                 })
             except Exception as e:
-                results.append({
-                    "target_name": target_name,
-                    "target_idx": idx,
-                    "label": "error",
-                    "score": 0.0,
-                    "confirmed_state": "Error",
-                    "anomaly_flag": True,
-                })
+                _logger.warning("raw 분류 실패 (target_1 가중치 없음): %s", e)
 
-    except FileNotFoundError:
-        # YOLO 없으면 raw 이미지로 target_1만 분류 시도
-        try:
-            from app.service.target_service import TargetService
-            svc = TargetService()
-            pred = svc.predict_bgr("target_1", frame_bgr)
-            results.append({
-                "target_name": "target_1",
-                "target_idx": 1,
-                "label": pred.label,
-                "score": float(pred.score),
-                "confirmed_state": "Yes" if pred.label == "yes" else "No",
-                "anomaly_flag": pred.label != "yes",
-            })
-        except Exception:
-            pass
+    except Exception as e:
+        _logger.error("_inspect_single_image 예외 (원인 확인 필요): %s", e, exc_info=True)
 
     return results
 
 
-# ── 내부: 영상 순차 추론 ───────────────────────────────────────────────────────
+# -- 내부: 영상 순차 추론 --------------------------------------------------
 def _inspect_video(video_path: Path, run_root: Path) -> dict[str, Any]:
-    """SequenceService를 사용해 영상에서 T1→T4 순차 판정합니다."""
-    from app.core.paths import OUTPUTS_DIR, yolo_weight_file
-    from app.service.sequence_service import SequenceRunConfig, SequenceService
+    """SequenceService를 사용해 영상에서 T1->T4 순차 판정합니다."""
+    try:
+        from app.core.paths import yolo_weight_file
+        from app.service.sequence_service import SequenceRunConfig, SequenceService
 
-    yolo_path = yolo_weight_file()
-    config = SequenceRunConfig(
-        source=[video_path],
-        target_order=DEFAULT_TARGET_ORDER,
-        yolo_weights=yolo_path,
-        output_root=run_root,
-        device="cpu",
-        save_confirmed_frames=False,
-    )
-    svc = SequenceService(config)
-    result = svc.process_video(video_path, run_root)
-    return result
+        yolo_path = yolo_weight_file()
+        config = SequenceRunConfig(
+            source=[video_path],
+            target_order=DEFAULT_TARGET_ORDER,
+            yolo_weights=yolo_path,
+            output_root=run_root,
+            device="cpu",
+            save_confirmed_frames=False,
+        )
+        svc = SequenceService(config)
+        return svc.process_video(video_path, run_root)
+    except Exception as e:
+        _logger.error("_inspect_video 예외 (원인 확인 필요): %s", e, exc_info=True)
+        raise  # 호출측 except 에서 DB 에 Error 로 기록
+
+
 
 
 # ── GET /api/inspection-logs ───────────────────────────────────────────────────
@@ -220,6 +216,13 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                 # ── 영상 처리 ──────────────────────────────────────────────
                 from app.core.paths import SEQUENCE_VIDEO_RUNS_DIR
 
+                confirmed_state = "Pending"
+                predicted_label = "unknown"
+                confidence = 0.0
+                anomaly_flag = True
+                confirmed_targets = 0
+                extra: dict = {}
+
                 try:
                     video_result = await loop.run_in_executor(
                         None, _inspect_video, save_path, SEQUENCE_VIDEO_RUNS_DIR
@@ -227,7 +230,6 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                     targets = video_result.get("targets", [])
                     completed = bool(video_result.get("completed", False))
                     confirmed_targets = int(video_result.get("confirmed_targets", 0))
-
                     confirmed_state = (
                         f"Complete_{confirmed_targets}of{len(DEFAULT_TARGET_ORDER)}"
                         if completed else
@@ -237,50 +239,32 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                     predicted_label = last_target.get("target_name", "unknown")
                     confidence = float(last_target.get("last_score", 0.0))
                     anomaly_flag = not completed
-
-                    log_id = insert_log(
-                        source_type="video_upload",
-                        confirmed_state=confirmed_state,
-                        predicted_label=predicted_label,
-                        confidence=confidence,
-                        anomaly_flag=anomaly_flag,
-                        file_path=file_label,
-                        target_idx=confirmed_targets,
-                        extra={"video_result": {
-                            "completed": completed,
-                            "confirmed_targets": confirmed_targets,
-                            "targets": [
-                                {"name": t.get("target_name"), "completed": t.get("completed")}
-                                for t in targets
-                            ],
-                        }},
-                    )
-                    results.append({
-                        "id": log_id,
-                        "file": file_label,
-                        "source_type": "video_upload",
-                        "predicted_label": predicted_label,
-                        "confidence": confidence,
-                        "confirmed_state": confirmed_state,
-                        "anomaly_flag": anomaly_flag,
-                        "targets": [
-                            {
-                                "target_name": t.get("target_name"),
-                                "completed": t.get("completed"),
-                                "last_label": t.get("last_label"),
-                                "last_score": t.get("last_score"),
-                            }
-                            for t in targets
-                        ],
-                    })
+                    extra = {"completed": completed, "confirmed_targets": confirmed_targets,
+                             "targets": [{"name": t.get("target_name"), "completed": t.get("completed")} for t in targets]}
                 except Exception as e:
-                    results.append({
-                        "file": file_label,
-                        "source_type": "video_upload",
-                        "error": str(e),
-                        "confirmed_state": "Error",
-                        "anomaly_flag": True,
-                    })
+                    confirmed_state = "Error"
+                    extra = {"error": str(e)}
+
+                # 성공/실패 모두 DB에 기록
+                log_id = insert_log(
+                    source_type="video_upload",
+                    confirmed_state=confirmed_state,
+                    predicted_label=predicted_label,
+                    confidence=confidence,
+                    anomaly_flag=anomaly_flag,
+                    file_path=file_label,
+                    target_idx=confirmed_targets,
+                    extra=extra,
+                )
+                results.append({
+                    "id": log_id,
+                    "file": file_label,
+                    "source_type": "video_upload",
+                    "predicted_label": predicted_label,
+                    "confidence": confidence,
+                    "confirmed_state": confirmed_state,
+                    "anomaly_flag": anomaly_flag,
+                })
 
             elif ext in _IMAGE_EXTS:
                 # ── 이미지 처리 ────────────────────────────────────────────
@@ -288,6 +272,14 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                     per_target = await loop.run_in_executor(
                         None, _inspect_single_image, save_path
                     )
+
+                    if not per_target:
+                        # 이미지 읽기 실패 등 — 최소 1건 기록
+                        per_target = [{
+                            "target_name": "unknown", "target_idx": 0,
+                            "label": "no_result", "score": 0.0,
+                            "confirmed_state": "NoResult", "anomaly_flag": True,
+                        }]
 
                     for item in per_target:
                         log_id = insert_log(
@@ -311,14 +303,28 @@ async def inspect_image(files: list[UploadFile] = File(...)) -> JSONResponse:
                             "confirmed_state": item["confirmed_state"],
                             "anomaly_flag": item["anomaly_flag"],
                         })
+
                 except Exception as e:
+                    # 예외 발생 시에도 DB에 기록
+                    log_id = insert_log(
+                        source_type="image_upload",
+                        confirmed_state="Error",
+                        predicted_label="error",
+                        confidence=0.0,
+                        anomaly_flag=True,
+                        file_path=file_label,
+                        target_idx=0,
+                        extra={"error": str(e)},
+                    )
                     results.append({
+                        "id": log_id,
                         "file": file_label,
                         "source_type": "image_upload",
                         "error": str(e),
                         "confirmed_state": "Error",
                         "anomaly_flag": True,
                     })
+
             else:
                 results.append({
                     "file": file_label,

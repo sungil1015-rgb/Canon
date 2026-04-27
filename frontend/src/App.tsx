@@ -496,17 +496,19 @@ function DetailModal({
   );
 }
 
-// ── 테스트 모드 모달 (DB 데이터 조회) ──────────────────────────────────────────
+// ── 테스트 모드 모달 ─────────────────────────────────────────────────────────
 function TestModeModal() {
   const { isTestModeOpen, setTestModeOpen, dbLogs, setDbLogs, language } = useAppStore();
   const t = locales[language];
   const [loading, setLoading] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectFiles, setInspectFiles] = useState<string[]>([]);
+  const [inspectDone, setInspectDone] = useState(0);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const LIMIT = 30;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
   const fetchLogs = async (isNew = false) => {
@@ -514,226 +516,250 @@ function TestModeModal() {
     setLoading(true);
     const currentOffset = isNew ? 0 : offset;
     try {
-      // inspection_log + sequence_runs 동시 조회
       const [inspResp, seqResp] = await Promise.all([
         fetch(`${import.meta.env.VITE_API_URL}/api/inspection-logs?offset=${currentOffset}&limit=${LIMIT}`),
         fetch(`${import.meta.env.VITE_API_URL}/api/sequence-runs?offset=${currentOffset}&limit=${LIMIT}`),
       ]);
       const inspData = await inspResp.json();
-      const seqData  = await seqResp.json().catch(() => []);
-
+      const seqData = await seqResp.json().catch(() => []);
       const merged = [
         ...(Array.isArray(inspData) ? inspData : []),
-        ...(Array.isArray(seqData)  ? seqData  : []),
+        ...(Array.isArray(seqData) ? seqData : []),
       ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-      if (isNew) {
-        setDbLogs(merged);
-        setOffset(merged.length);
-      } else {
-        setDbLogs([...dbLogs, ...merged]);
-        setOffset(p => p + merged.length);
-      }
-      if (inspData.length < LIMIT && seqData.length < LIMIT) setHasMore(false);
-      else setHasMore(true);
-    } catch (err) {
-      console.error("Failed to fetch logs:", err);
-    } finally {
-      setLoading(false);
-    }
+      if (isNew) { setDbLogs(merged); setOffset(merged.length); }
+      else { setDbLogs([...dbLogs, ...merged]); setOffset(p => p + merged.length); }
+      setHasMore(!(inspData.length < LIMIT && seqData.length < LIMIT));
+    } catch (err) { console.error(err); }
+    finally { setLoading(false); }
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
+    const files = Array.from(e.target.files);
     const formData = new FormData();
-    Array.from(e.target.files).forEach(f => formData.append("files", f));
-    
-    setLoading(true);
+    files.forEach(f => formData.append("files", f));
+
+    setInspectFiles(files.map(f => f.name));
+    setInspectDone(0);
+    setInspecting(true);
+
     try {
-      const resp = await fetch(`${import.meta.env.VITE_API_URL}/api/inspect-image`, {
-        method: "POST",
-        body: formData
-      });
+      const resp = await fetch(`${import.meta.env.VITE_API_URL}/api/inspect-image`, { method: "POST", body: formData });
       const data = await resp.json();
-      alert(`${data.inspections?.length || 0}개의 파일 가상 재검사 완료!`);
-      fetchLogs(true);
+      setInspectDone(data.inspections?.length ?? files.length);
+      await fetchLogs(true);
     } catch (err) {
       console.error(err);
-      alert("검사 요청 실패");
-      setLoading(false);
     } finally {
+      setInspecting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  const handleReinspect = async (logId: number) => {
-    setLoading(true);
-    try {
-      const resp = await fetch(`${import.meta.env.VITE_API_URL}/api/reinspect-log/${logId}`, {
-        method: "POST"
-      });
-      const data = await resp.json();
-      if(data.status === "success") {
-        alert(`${t.reinspect} 완료!`);
-        fetchLogs(true);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    if (isTestModeOpen) {
-      fetchLogs(true);
-    }
+    if (isTestModeOpen) fetchLogs(true);
   }, [isTestModeOpen]);
 
-  // 무한 스크롤 관찰자 설정
   useEffect(() => {
     if (!isTestModeOpen) return;
-    
+    const timer = setInterval(() => fetchLogs(true), 10_000);
+    return () => clearInterval(timer);
+  }, [isTestModeOpen]);
+
+  useEffect(() => {
+    if (!isTestModeOpen) return;
     const target = document.getElementById("scroll-trigger");
     if (!target) return;
-
     observerRef.current = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting && hasMore && !loading) {
-        fetchLogs(false);
-      }
+      if (entries[0].isIntersecting && hasMore && !loading) fetchLogs(false);
     }, { threshold: 1.0 });
-
     observerRef.current.observe(target);
     return () => observerRef.current?.disconnect();
   }, [isTestModeOpen, hasMore, loading, offset]);
 
   if (!isTestModeOpen) return null;
 
+  // 상태별 스타일 헬퍼
+  const stateStyle = (s: string) => {
+    if (!s) return { cls: 'bg-zinc-800 text-zinc-400 border-zinc-700', icon: '○' };
+    if (s === 'Yes' || s.startsWith('Complete')) return { cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40', icon: '✓' };
+    if (s === 'No' || s.startsWith('Partial')) return { cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/40', icon: '△' };
+    if (s === 'NoDetection') return { cls: 'bg-sky-500/15 text-sky-400 border-sky-500/40', icon: '⊘' };
+    if (s === 'Error' || s === 'ModelError') return { cls: 'bg-red-500/15 text-red-400 border-red-500/40', icon: '✗' };
+    return { cls: 'bg-zinc-800 text-zinc-400 border-zinc-700', icon: '?' };
+  };
+
+  const sourceChip = (src: string) => {
+    if (src === 'sequence_run') return 'bg-blue-500/10 text-blue-400 border-blue-500/30';
+    if (src === 'video_upload') return 'bg-purple-500/10 text-purple-400 border-purple-500/30';
+    if (src === 'image_upload') return 'bg-teal-500/10 text-teal-400 border-teal-500/30';
+    return 'bg-zinc-800 text-zinc-500 border-zinc-700';
+  };
+
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
-      <div className="bg-[#18181b] border-2 border-[#f59e0b] w-[95vw] h-[90vh] shadow-[0_0_50px_rgba(245,158,11,0.15)] flex flex-col">
-        <div className="flex items-center justify-between p-5 border-b border-[#3f3f46] bg-[#27272a]">
+      <div className="bg-[#18181b] border-2 border-[#f59e0b] w-[95vw] h-[90vh] shadow-[0_0_50px_rgba(245,158,11,0.15)] flex flex-col relative overflow-hidden">
+
+        {/* 검사 진행 오버레이 */}
+        {inspecting && (
+          <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center gap-6">
+            <div className="relative w-24 h-24">
+              <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#3f3f46" strokeWidth="8" />
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#f59e0b" strokeWidth="8"
+                  strokeLinecap="round"
+                  strokeDasharray={`${2 * Math.PI * 40}`}
+                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - (inspectDone / inspectFiles.length || 0))}`}
+                  className="transition-all duration-500" />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-[#f59e0b] font-black text-xl">{inspectFiles.length > 0 ? Math.round(inspectDone / inspectFiles.length * 100) : 0}%</span>
+              </div>
+            </div>
+            <div className="text-center">
+              <p className="text-white font-black text-2xl tracking-tight mb-1">검사 진행 중...</p>
+              <p className="text-zinc-400 text-sm font-mono">{inspectDone} / {inspectFiles.length} 파일 완료</p>
+            </div>
+            <div className="w-80 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+              {inspectFiles.map((name, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded bg-white/5 border border-white/10">
+                  <span className={`w-4 h-4 rounded-full flex-shrink-0 text-[10px] flex items-center justify-center font-black ${i < inspectDone ? 'bg-emerald-500 text-white' : 'bg-zinc-700 text-zinc-500'}`}>
+                    {i < inspectDone ? '✓' : '·'}
+                  </span>
+                  <span className="text-zinc-300 text-xs font-mono truncate">{name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 헤더 */}
+        <div className="flex items-center justify-between p-5 border-b border-[#3f3f46] bg-[#27272a] flex-shrink-0">
           <div className="flex items-center gap-4">
             <div className="bg-[#f59e0b]/10 p-2 rounded-sm border border-[#f59e0b]/30">
               <Database size={28} className="text-[#f59e0b]" />
             </div>
             <div>
               <h2 className="text-2xl font-black text-zinc-100 tracking-tighter uppercase leading-none">{t.testMode}</h2>
-              <p className="text-[10px] text-zinc-500 font-mono mt-1 uppercase tracking-widest">Total Cached: {dbLogs.length} Rows</p>
+              <p className="text-[10px] text-zinc-500 font-mono mt-1 uppercase tracking-widest">
+                {dbLogs.length} records · auto-refresh 10s
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <input type="file" multiple accept="image/*,video/*" className="hidden" ref={fileInputRef} onChange={handleUpload} />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
-              className="flex items-center gap-2 px-6 py-3 bg-[#E50012] hover:bg-[#ff3040] text-white text-xs font-black transition-all disabled:opacity-50 shadow-lg border border-[#E50012] active:scale-95"
+              disabled={loading || inspecting}
+              className="flex items-center gap-2 px-6 py-3 bg-[#E50012] hover:bg-[#ff3040] text-white text-xs font-black transition-all disabled:opacity-40 shadow-lg border border-[#E50012] active:scale-95"
             >
               <ImageIcon size={16} />
               {t.localTest}
             </button>
             <button
               onClick={() => fetchLogs(true)}
-              disabled={loading}
-              className="flex items-center gap-2 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 text-zinc-300 text-xs font-black transition-all disabled:opacity-50"
+              disabled={loading || inspecting}
+              className="flex items-center gap-2 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 text-zinc-300 text-xs font-black transition-all disabled:opacity-40"
             >
               <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
               {t.refresh}
             </button>
-            <button
-              onClick={() => setTestModeOpen(false)}
-              className="text-zinc-500 hover:text-white p-2 hover:bg-zinc-800 transition-colors"
-            >
+            <button onClick={() => setTestModeOpen(false)} className="text-zinc-500 hover:text-white p-2 hover:bg-zinc-800 transition-colors">
               <X size={32} />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-2 custom-scrollbar bg-black/60" ref={scrollRef}>
-          <table className="w-full text-left border-collapse min-w-[1200px]">
+        {/* 테이블 */}
+        <div className="flex-1 overflow-auto custom-scrollbar bg-black/60">
+          <table className="w-full text-left border-collapse min-w-[900px]">
             <thead className="sticky top-0 bg-[#27272a] shadow-xl z-20">
-              <tr className="text-[#f59e0b] text-xs font-black uppercase tracking-widest border-b border-[#3f3f46]">
-                <th className="p-4 pl-6">ID</th>
-                <th className="p-4">Timestamp</th>
-                <th className="p-4">Source</th>
-                <th className="p-4">State</th>
-                <th className="p-4">Label</th>
-                <th className="p-4">Conf</th>
-                <th className="p-4">Anomaly</th>
-                <th className="p-4">File Path</th>
-                <th className="p-4 pr-6 text-center">{t.action}</th>
+              <tr className="text-[#f59e0b] text-[10px] font-black uppercase tracking-widest border-b border-[#3f3f46]">
+                <th className="p-4 pl-6 w-16">ID</th>
+                <th className="p-4 w-44">Timestamp</th>
+                <th className="p-4 w-36">Source</th>
+                <th className="p-4 w-44">Result</th>
+                <th className="p-4 w-28">Label</th>
+                <th className="p-4 w-36">Confidence</th>
+                <th className="p-4">File</th>
               </tr>
             </thead>
-            <tbody className="text-sm font-mono text-zinc-400 divide-y divide-zinc-800/50">
+            <tbody className="text-sm font-mono text-zinc-400 divide-y divide-zinc-800/40">
               {dbLogs.map((log) => {
-                const isSeqRun = log.source_type === 'sequence_run';
+                const ss = stateStyle(log.confirmed_state);
+                const conf = Math.round((log.confidence ?? 0) * 100);
+                const isSeq = log.source_type === 'sequence_run';
                 return (
-                <tr key={log.id} className={`hover:bg-white/5 transition-colors group ${isSeqRun ? 'border-l-2 border-l-blue-500/40' : ''}`}>
-                  <td className="p-5 pl-6 text-zinc-600 font-bold group-hover:text-zinc-400 transition-colors">#{log.id}</td>
-                  <td className="p-5 whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</td>
-                  <td className="p-5 font-black uppercase text-[10px]">
-                    <span className={isSeqRun ? 'text-blue-400' : 'text-blue-400/80'}>
-                      {log.source_type}
-                    </span>
-                    {isSeqRun && (
-                      <span className="ml-1.5 px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/30 text-blue-400 text-[9px] rounded-sm">
-                        T{log.target_idx}/4
+                  <tr key={log.id} className={`hover:bg-white/[0.04] transition-colors group ${isSeq ? 'border-l-2 border-l-blue-500/50' : ''}`}>
+                    {/* ID */}
+                    <td className="p-4 pl-6 text-zinc-700 font-bold group-hover:text-zinc-500 text-xs">
+                      #{String(log.id).replace('100000', 'S')}
+                    </td>
+                    {/* Timestamp */}
+                    <td className="p-4 text-zinc-500 text-[11px] whitespace-nowrap">
+                      {new Date(log.timestamp).toLocaleString('ko-KR', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' })}
+                    </td>
+                    {/* Source */}
+                    <td className="p-4">
+                      <span className={`px-2 py-1 text-[9px] font-black uppercase tracking-wider border rounded-sm ${sourceChip(log.source_type)}`}>
+                        {log.source_type === 'sequence_run' ? 'SEQ RUN' :
+                         log.source_type === 'video_upload' ? 'VIDEO' :
+                         log.source_type === 'image_upload' ? 'IMAGE' : log.source_type}
                       </span>
-                    )}
-                  </td>
-                  <td className="p-5">
-                    <span className={`px-3 py-1.5 rounded-sm text-[11px] font-black tracking-tighter ${
-                      log.confirmed_state?.startsWith('Complete') ? 'bg-green-500/10 text-green-500 border border-green-500/30'
-                      : log.confirmed_state?.startsWith('Partial') ? 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/30'
-                      : log.confirmed_state === 'ERROR_SEQUENCE' ? 'bg-red-500/10 text-red-500 border border-red-500/30'
-                      : 'bg-green-500/10 text-green-500 border border-green-500/30'
-                    }`}>
-                      {log.confirmed_state}
-                    </span>
-                  </td>
-                  <td className="p-5 text-zinc-200 font-black">{log.predicted_label}</td>
-                  <td className="p-5 text-[#f59e0b] font-black text-base italic">{(log.confidence * 100).toFixed(1)}%</td>
-                  <td className="p-5">
-                    {log.anomaly_flag ? 
-                      <div className="flex items-center gap-2 text-red-500"><ShieldAlert size={14} className="animate-pulse" /><span className="font-black text-[10px] tracking-widest">ALARM</span></div> 
-                      : <span className="text-zinc-800 font-black text-[10px]">NORMAL</span>
-                    }
-                  </td>
-                  <td className="p-5 text-[10px] text-zinc-500 truncate max-w-[300px] hover:text-[#38bdf8] cursor-help transition-colors">{log.file_path}</td>
-                  <td className="p-5 pr-6 text-center">
-                    {isSeqRun ? (
-                      <span className="px-5 py-3 text-zinc-700 text-[11px] font-black tracking-widest border border-zinc-800 cursor-not-allowed">
-                        SEQ RUN
+                      {isSeq && log.target_idx !== undefined && (
+                        <span className="ml-1.5 text-blue-400/70 text-[9px] font-black">T{log.target_idx}/4</span>
+                      )}
+                    </td>
+                    {/* Result state */}
+                    <td className="p-4">
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-black border rounded-sm ${ss.cls}`}>
+                        <span>{ss.icon}</span>
+                        <span className="truncate max-w-[140px]">{log.confirmed_state ?? '—'}</span>
                       </span>
-                    ) : (
-                      <button 
-                        onClick={() => handleReinspect(log.id)}
-                        disabled={loading}
-                        className="px-5 py-3 font-normal bg-zinc-800 hover:bg-[#E50012] text-white text-[11px] font-black tracking-widest transition-all shadow-md active:scale-90 border border-zinc-700"
-                      >
-                        {t.reinspect}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
+                    </td>
+                    {/* Label */}
+                    <td className="p-4 text-zinc-200 font-black text-xs uppercase">
+                      {log.predicted_label ?? '—'}
+                    </td>
+                    {/* Confidence bar */}
+                    <td className="p-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-20 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${conf >= 80 ? 'bg-emerald-500' : conf >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                            style={{ width: `${conf}%` }}
+                          />
+                        </div>
+                        <span className={`text-xs font-black ${conf >= 80 ? 'text-emerald-400' : conf >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {conf}%
+                        </span>
+                      </div>
+                    </td>
+                    {/* File */}
+                    <td className="p-4 text-[10px] text-zinc-600 truncate max-w-[260px] hover:text-[#38bdf8] cursor-help transition-colors" title={log.file_path}>
+                      {log.file_path ? log.file_path.split(/[\\/]/).pop() : '—'}
+                    </td>
+                  </tr>
+                );
               })}
             </tbody>
           </table>
           {dbLogs.length === 0 && !loading && (
-            <div className="h-full flex flex-col items-center justify-center opacity-30 mt-20">
-              <Database size={64} className="mb-4" />
-              <p className="text-lg font-bold">NO DATA FOUND</p>
+            <div className="flex flex-col items-center justify-center py-32 opacity-20">
+              <Database size={56} className="mb-4" />
+              <p className="text-lg font-black uppercase tracking-widest">No Records Found</p>
             </div>
           )}
+          <div id="scroll-trigger" className="h-4" />
         </div>
 
-        <div className="p-3 bg-[#27272a] border-t border-[#3f3f46] flex justify-between items-center">
-          <span className="text-[10px] font-mono text-zinc-500 tracking-widest">CONNECTED TO DB: factory_test.db + sequence_runs.sqlite3</span>
-          <button
-            onClick={() => setTestModeOpen(false)}
-            className="px-8 py-2 bg-[#f59e0b] hover:bg-[#ffb020] text-black font-black text-sm transition-all"
-          >
+        {/* 하단 */}
+        <div className="p-3 bg-[#27272a] border-t border-[#3f3f46] flex justify-between items-center flex-shrink-0">
+          <span className="text-[10px] font-mono text-zinc-600 tracking-widest">
+            DB · factory_test.db + sequence_runs.sqlite3
+          </span>
+          <button onClick={() => setTestModeOpen(false)} className="px-8 py-2 bg-[#f59e0b] hover:bg-[#ffb020] text-black font-black text-sm transition-all">
             닫기
           </button>
         </div>
@@ -741,6 +767,7 @@ function TestModeModal() {
     </div>
   );
 }
+
 
 // ─── 설정 모달 ────────────────────────────────────────────────────────────────
 function SettingsModal() {
